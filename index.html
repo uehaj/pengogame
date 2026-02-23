@@ -161,24 +161,26 @@ function movePlayer(dx, dy) {
   const cell = grid[ny][nx];
   if (cell === WALL) return;
   if (cell === BLOCK) {
-    // try to push block
+    // check if block can slide at least one step
     const bx = nx + dx, by = ny + dy;
     if (bx < 0 || bx >= COLS || by < 0 || by >= ROWS) return;
     if (grid[by][bx] !== EMPTY) return;
-    // crush enemy?
-    const crushed = enemies.find(e => e.x === bx && e.y === by);
-    if (crushed) {
-      // can't push into enemy if enemy is blocked too — but here dest is EMPTY
-    }
-    // push block
-    grid[ny][nx] = EMPTY;
-    grid[by][bx] = BLOCK;
-    // check crush
-    const hit = enemies.findIndex(e => e.x === bx && e.y === by);
-    if (hit >= 0) {
-      enemies.splice(hit, 1);
-      score += 400;
-      updateHUD();
+    // slide block until it hits wall or another block
+    let sbx = nx, sby = ny;
+    while (true) {
+      const snx = sbx + dx, sny = sby + dy;
+      if (snx < 0 || snx >= COLS || sny < 0 || sny >= ROWS) break;
+      if (grid[sny][snx] !== EMPTY) break;
+      const hit = enemies.findIndex(e => e.x === snx && e.y === sny);
+      grid[sby][sbx] = EMPTY;
+      sbx = snx; sby = sny;
+      grid[sby][sbx] = BLOCK;
+      if (hit >= 0) {
+        enemies.splice(hit, 1);
+        score += 400;
+        updateHUD();
+        break;
+      }
     }
   }
   player.x = nx;
