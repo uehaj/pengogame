@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(gh auth status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh repo create:*)",
+      "Bash(git -C /Users/ueha-j/work/202602/pengogame remote -v)",
+      "Bash(git -C /Users/ueha-j/work/202602/pengogame status:*)",
+      "Bash(git -C /Users/ueha-j/work/202602/pengogame diff)",
+      "Bash(git -C /Users/ueha-j/work/202602/pengogame add .claude/)"
+    ]
+  }
+}
