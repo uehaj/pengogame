@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>PENGO</title>
+<style>
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+    font-family: monospace;
+    color: #fff;
+  }
+  canvas {
+    image-rendering: pixelated;
+    border: 2px solid #4cf;
+  }
+  #hud {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 8px;
+    font-size: 18px;
+    letter-spacing: 2px;
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span>SCORE: <span id="score">0</span></span>
+  <span>LIVES: <span id="lives">3</span></span>
+</div>
+<canvas id="c"></canvas>
+<script>
+// ======== CONFIG ========
+const COLS = 14, ROWS = 14, CS = 36; // cell size
+const W = COLS * CS, H = ROWS * CS;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = W; canvas.height = H;
+
+// Cell types
+const EMPTY = 0, WALL = 1, BLOCK = 2;
+
+// Directions
+const DIRS = {
+  ArrowUp:    { dx:  0, dy: -1 },
+  ArrowDown:  { dx:  0, dy:  1 },
+  ArrowLeft:  { dx: -1, dy:  0 },
+  ArrowRight: { dx:  1, dy:  0 },
+};
+
+// ======== GRID ========
+let grid = [];
+
+function initGrid() {
+  grid = [];
+  for (let y = 0; y < ROWS; y++) {
+    grid[y] = [];
+    for (let x = 0; x < COLS; x++) {
+      if (x === 0 || x === COLS-1 || y === 0 || y === ROWS-1) {
+        grid[y][x] = WALL;
+      } else {
+        grid[y][x] = EMPTY;
+      }
+    }
+  }
+  // place random ice blocks (avoid player start and enemy starts)
+  const forbidden = new Set();
+  // player start area
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++)
+      forbidden.add(`${1+dx},${1+dy}`);
+  // enemy start areas
+  [[COLS-2, ROWS-2],[COLS-2, 2],[2, ROWS-2]].forEach(([ex,ey]) => {
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++)
+        forbidden.add(`${ex+dx},${ey+dy}`);
+  });
+  let placed = 0;
+  while (placed < 30) {
+    const x = 1 + Math.floor(Math.random() * (COLS-2));
+    const y = 1 + Math.floor(Math.random() * (ROWS-2));
+    if (!forbidden.has(`${x},${y}`) && grid[y][x] === EMPTY) {
+      grid[y][x] = BLOCK;
+      placed++;
+    }
+  }
+}
+
+// ======== PLAYER ========
+let player = {
+  x: 1, y: 1,
+  dir: { dx: 0, dy: -1 }, // facing up
+  alive: true,
+  invincible: 0,  // frames of invincibility after death
+};
+
+// ======== ENEMIES ========
+const ENEMY_COUNT = 5;
+const STUN_TIME = 180; // frames
+let enemies = [];
+
+function initEnemies() {
+  const starts = [
+    [COLS-2, ROWS-2],
+    [COLS-2, 2],
+    [2, ROWS-2],
+    [COLS-2, Math.floor(ROWS/2)],
+    [Math.floor(COLS/2), ROWS-2],
+  ];
+  enemies = starts.slice(0, ENEMY_COUNT).map(([x,y]) => ({
+    x, y,
+    dx: -1, dy: 0,
+    stun: 0,
+    moveTimer: 0,
+    moveInterval: 25 + Math.floor(Math.random() * 15),
+  }));
+}
+
+// ======== SCORE / LIVES / STATE ========
+let score = 0;
+let lives = 3;
+let gameState = 'playing'; // 'playing', 'dead', 'clear', 'gameover'
+let stateTimer = 0;
+
+function updateHUD() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('lives').textContent = lives;
+}
+
+// ======== INPUT ========
+const keys = {};
+document.addEventListener('keydown', e => {
+  if (keys[e.code]) return; // prevent repeat
+  keys[e.code] = true;
+  if (gameState === 'playing') handleInput(e.code);
+  else if ((gameState === 'clear' || gameState === 'gameover') && e.code === 'Space') {
+    restartGame();
+  } else if (gameState === 'dead' && e.code === 'Space') {
+    respawn();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function handleInput(code) {
+  if (code in DIRS) {
+    movePlayer(DIRS[code].dx, DIRS[code].dy);
+  } else if (code === 'Space') {
+    pushOrShake();
+  }
+}
+
+function movePlayer(dx, dy) {
+  player.dir = { dx, dy };
+  const nx = player.x + dx, ny = player.y + dy;
+  if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return;
+  const cell = grid[ny][nx];
+  if (cell === WALL) return;
+  if (cell === BLOCK) {
+    // try to push block
+    const bx = nx + dx, by = ny + dy;
+    if (bx < 0 || bx >= COLS || by < 0 || by >= ROWS) return;
+    if (grid[by][bx] !== EMPTY) return;
+    // crush enemy?
+    const crushed = enemies.find(e => e.x === bx && e.y === by);
+    if (crushed) {
+      // can't push into enemy if enemy is blocked too — but here dest is EMPTY
+    }
+    // push block
+    grid[ny][nx] = EMPTY;
+    grid[by][bx] = BLOCK;
+    // check crush
+    const hit = enemies.findIndex(e => e.x === bx && e.y === by);
+    if (hit >= 0) {
+      enemies.splice(hit, 1);
+      score += 400;
+      updateHUD();
+    }
+  }
+  player.x = nx;
+  player.y = ny;
+  checkEnemyCollision();
+}
+
+function pushOrShake() {
+  const { dx, dy } = player.dir;
+  const tx = player.x + dx, ty = player.y + dy;
+  if (tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) return;
+
+  if (grid[ty][tx] === WALL) {
+    // shake wall — stun nearby enemies (same row/col on that wall side)
+    stunNearWall(tx, ty, dx, dy);
+    return;
+  }
+
+  if (grid[ty][tx] === BLOCK) {
+    // slide push: push until it hits wall or another block
+    let bx = tx, by = ty;
+    while (true) {
+      const nx = bx + dx, ny = by + dy;
+      if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) break;
+      if (grid[ny][nx] !== EMPTY) break;
+      const hit = enemies.findIndex(e => e.x === nx && e.y === ny);
+      grid[by][bx] = EMPTY;
+      bx = nx; by = ny;
+      grid[by][bx] = BLOCK;
+      if (hit >= 0) {
+        enemies.splice(hit, 1);
+        score += 400;
+        updateHUD();
+        break;
+      }
+    }
+  }
+}
+
+function stunNearWall(wx, wy, dx, dy) {
+  // stun enemies within 3 cells along the wall
+  enemies.forEach(e => {
+    let dist;
+    if (dx === 0) { // horizontal wall (top/bottom)
+      dist = Math.abs(e.x - player.x);
+      if (e.y === wy - dy && dist <= 3) e.stun = STUN_TIME;
+    } else { // vertical wall (left/right)
+      dist = Math.abs(e.y - player.y);
+      if (e.x === wx - dx && dist <= 3) e.stun = STUN_TIME;
+    }
+  });
+  score += 10;
+  updateHUD();
+}
+
+function checkEnemyCollision() {
+  if (player.invincible > 0) return;
+  const hit = enemies.find(e => e.x === player.x && e.y === player.y && e.stun === 0);
+  if (hit) killPlayer();
+}
+
+function killPlayer() {
+  player.alive = false;
+  lives--;
+  updateHUD();
+  gameState = lives > 0 ? 'dead' : 'gameover';
+  stateTimer = 0;
+}
+
+function respawn() {
+  player.x = 1; player.y = 1;
+  player.dir = { dx: 0, dy: -1 };
+  player.alive = true;
+  player.invincible = 120;
+  gameState = 'playing';
+}
+
+function restartGame() {
+  score = 0; lives = 3;
+  updateHUD();
+  initGrid();
+  initEnemies();
+  player.x = 1; player.y = 1;
+  player.dir = { dx: 0, dy: -1 };
+  player.alive = true;
+  player.invincible = 60;
+  gameState = 'playing';
+}
+
+// ======== ENEMY AI ========
+function updateEnemies() {
+  enemies.forEach(e => {
+    if (e.stun > 0) {
+      e.stun--;
+      return;
+    }
+    e.moveTimer++;
+    if (e.moveTimer < e.moveInterval) return;
+    e.moveTimer = 0;
+
+    // simple chase + random
+    const toPlayer = Math.random() < 0.6;
+    let nx, ny;
+    if (toPlayer) {
+      const pdx = Math.sign(player.x - e.x);
+      const pdy = Math.sign(player.y - e.y);
+      // pick axis with larger distance
+      const ax = Math.abs(player.x - e.x), ay = Math.abs(player.y - e.y);
+      if (ax > ay) { nx = e.x + pdx; ny = e.y; }
+      else if (ay > 0) { nx = e.x; ny = e.y + pdy; }
+      else { nx = e.x + pdx; ny = e.y; }
+    } else {
+      const randDirs = [
+        {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
+      ];
+      const d = randDirs[Math.floor(Math.random() * 4)];
+      nx = e.x + d.dx; ny = e.y + d.dy;
+    }
+
+    if (nx < 1 || nx >= COLS-1 || ny < 1 || ny >= ROWS-1) return;
+    if (grid[ny][nx] === EMPTY) {
+      e.dx = nx - e.x; e.dy = ny - e.y;
+      e.x = nx; e.y = ny;
+      if (e.x === player.x && e.y === player.y && player.invincible === 0) {
+        killPlayer();
+      }
+    } else if (grid[ny][nx] === BLOCK) {
+      // enemies break blocks slowly
+      if (Math.random() < 0.05) {
+        grid[ny][nx] = EMPTY;
+      }
+    }
+  });
+}
+
+// ======== DRAW HELPERS ========
+function drawPixelBlock(x, y, mainColor, hiColor, shadeColor) {
+  const px = x * CS, py = y * CS;
+  ctx.fillStyle = mainColor;
+  ctx.fillRect(px, py, CS, CS);
+  // top-left highlight
+  ctx.fillStyle = hiColor;
+  ctx.fillRect(px, py, CS, 3);
+  ctx.fillRect(px, py, 3, CS);
+  // bottom-right shade
+  ctx.fillStyle = shadeColor;
+  ctx.fillRect(px, py + CS - 3, CS, 3);
+  ctx.fillRect(px + CS - 3, py, 3, CS);
+  // inner highlight dot
+  ctx.fillStyle = hiColor;
+  ctx.fillRect(px + 5, py + 5, 4, 4);
+}
+
+function drawWall(x, y) {
+  drawPixelBlock(x, y, '#aaddff', '#ffffff', '#4499cc');
+  // cross pattern
+  ctx.fillStyle = '#cceeff';
+  const px = x * CS, py = y * CS;
+  ctx.fillRect(px + CS/2 - 1, py + 4, 2, CS - 8);
+  ctx.fillRect(px + 4, py + CS/2 - 1, CS - 8, 2);
+}
+
+function drawIceBlock(x, y) {
+  drawPixelBlock(x, y, '#55aadd', '#88ddff', '#2266aa');
+  // sparkle
+  ctx.fillStyle = '#ffffff';
+  const px = x * CS, py = y * CS;
+  ctx.fillRect(px + CS - 8, py + 4, 3, 1);
+  ctx.fillRect(px + CS - 7, py + 3, 1, 3);
+}
+
+// Pixel art penguin (8x8 pattern scaled to fit cell)
+function drawPenguin(x, y, facing, blink) {
+  if (!blink) return;
+  const px = x * CS, py = y * CS;
+  const s = CS / 10;
+  // body
+  ctx.fillStyle = '#111';
+  ctx.fillRect(px + s*2, py + s*2, s*6, s*7);
+  // belly
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(px + s*3, py + s*3, s*4, s*5);
+  // eyes
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(px + s*2, py + s*2, s*2, s*2);
+  ctx.fillRect(px + s*6, py + s*2, s*2, s*2);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(px + s*2.5, py + s*2.5, s, s);
+  ctx.fillRect(px + s*6.5, py + s*2.5, s, s);
+  // beak
+  ctx.fillStyle = '#ff8800';
+  ctx.fillRect(px + s*4, py + s*4, s*2, s*1.5);
+  // feet
+  ctx.fillStyle = '#ff8800';
+  ctx.fillRect(px + s*2, py + s*8.5, s*2.5, s*1.5);
+  ctx.fillRect(px + s*5.5, py + s*8.5, s*2.5, s*1.5);
+  // direction indicator
+  ctx.fillStyle = '#ffffff88';
+  if (facing.dy === -1) ctx.fillRect(px + s*4, py + s, s*2, s);
+  if (facing.dy === 1)  ctx.fillRect(px + s*4, py + s*9, s*2, s);
+  if (facing.dx === -1) ctx.fillRect(px + s, py + s*4, s, s*2);
+  if (facing.dx === 1)  ctx.fillRect(px + s*9, py + s*4, s, s*2);
+}
+
+// Pixel art Sno-Bee
+function drawSnoBee(x, y, stunned) {
+  const px = x * CS, py = y * CS;
+  const s = CS / 10;
+  ctx.fillStyle = stunned ? '#8888ff' : '#dd2222';
+  // body
+  ctx.fillRect(px + s*2, py + s*2, s*6, s*6);
+  // eyes
+  ctx.fillStyle = '#ffff00';
+  ctx.fillRect(px + s*2.5, py + s*3, s*1.5, s*1.5);
+  ctx.fillRect(px + s*6, py + s*3, s*1.5, s*1.5);
+  // pupils
+  ctx.fillStyle = '#000';
+  ctx.fillRect(px + s*3, py + s*3.5, s, s);
+  ctx.fillRect(px + s*6.5, py + s*3.5, s, s);
+  // mouth
+  ctx.fillStyle = stunned ? '#4444ff' : '#880000';
+  ctx.fillRect(px + s*3.5, py + s*6, s*3, s);
+  // antennae
+  ctx.fillStyle = stunned ? '#aaaaff' : '#ff4444';
+  ctx.fillRect(px + s*3, py, s, s*2);
+  ctx.fillRect(px + s*6, py, s, s*2);
+  // legs
+  ctx.fillStyle = stunned ? '#6666cc' : '#aa1111';
+  ctx.fillRect(px + s*2, py + s*8, s*2, s*2);
+  ctx.fillRect(px + s*6, py + s*8, s*2, s*2);
+  if (stunned) {
+    // stars
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(px + s, py + s, s, s);
+    ctx.fillRect(px + s*8, py + s, s, s);
+    ctx.fillRect(px + s*4.5, py, s, s);
+  }
+}
+
+// ======== MAIN DRAW ========
+let frame = 0;
+function draw() {
+  ctx.fillStyle = '#001133';
+  ctx.fillRect(0, 0, W, H);
+
+  // grid
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] === WALL) drawWall(x, y);
+      else if (grid[y][x] === BLOCK) drawIceBlock(x, y);
+    }
+  }
+
+  // enemies
+  enemies.forEach(e => {
+    const blink = e.stun > 0 ? (Math.floor(frame / 6) % 2 === 0) : true;
+    if (blink) drawSnoBee(e.x, e.y, e.stun > 0);
+  });
+
+  // player
+  if (player.alive) {
+    const blink = player.invincible > 0 ? (Math.floor(frame / 4) % 2 === 0) : true;
+    drawPenguin(player.x, player.y, player.dir, blink);
+  }
+
+  // overlay messages
+  if (gameState === 'clear') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffff00';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('STAGE CLEAR!', W/2, H/2 - 20);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '18px monospace';
+    ctx.fillText(`SCORE: ${score}`, W/2, H/2 + 20);
+    ctx.fillText('SPACE to restart', W/2, H/2 + 50);
+  } else if (gameState === 'gameover') {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff4444';
+    ctx.font = 'bold 40px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', W/2, H/2 - 20);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '18px monospace';
+    ctx.fillText(`SCORE: ${score}`, W/2, H/2 + 20);
+    ctx.fillText('SPACE to restart', W/2, H/2 + 50);
+  } else if (gameState === 'dead') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff8800';
+    ctx.font = 'bold 28px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('YOU DIED', W/2, H/2 - 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px monospace';
+    ctx.fillText('SPACE to continue', W/2, H/2 + 25);
+  }
+}
+
+// ======== GAME LOOP ========
+function gameLoop() {
+  frame++;
+
+  if (gameState === 'playing') {
+    if (player.invincible > 0) player.invincible--;
+    updateEnemies();
+
+    // check win
+    if (enemies.length === 0) {
+      score += 1000;
+      updateHUD();
+      gameState = 'clear';
+    }
+  }
+
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// ======== INIT ========
+initGrid();
+initEnemies();
+updateHUD();
+gameLoop();
+</script>
+</body>
+</html>
